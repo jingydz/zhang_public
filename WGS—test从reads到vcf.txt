@@ -1,0 +1,88 @@
+###WGS—test从reads到vcf###
+###2021.1.6	--zhangjj
+
+1.参考基因组的准备    E.coli K12 一种实验用的大肠杆菌 基因组4.6Mb
+1.1 下载E.coli K12的参考基因组序列
+wget ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/005/845/GCF_000005845.2_ASM584v2/GCF_000005845.2_ASM584v2_genomic.fna.gz
+1.2 为了表达上的清晰和操作上的方便，进行解压缩和重命名 #它只有一条完整的染色体序列
+gzip -dc GCF_000005845.2_ASM584v2_genomic.fna.gz >E.coli_K12_MG1655.fa
+1.3 建立索引，为方便其他数据分析工具（比如GATK）能够快速地获取fasta上的任何序列做准备
+samtools faidx E.coli_K12_MG1655.fa
+1.4 索引示例，可以快速查看基因组中特定序列位置的碱基
+samtools faidx E.coli_K12_MG1655.fa NC_000913.3:1000000-1000200
+
+2.下载E.coli K12的测序数据	#SRR1770413 Illumina MiSeq测序平台 read长度300bp 测序类型paired-end 数据大小200MB    #https://www.ncbi.nlm.nih.gov/sra/?term=SRR1770413
+2.1 下载数据
+wget https://sra-downloadb.be-md.ncbi.nlm.nih.gov/sos1/sra-pub-run-2/SRR1770413/SRR1770413.1
+2.2 解压转换为fq
+fastq-dump --split-files SRR1770413.1
+#或者2.1和2.2合并为一个命令：fastq-dump --split-files SRR1770413；但这样速度很慢
+2.3 压缩数据，减少数据量
+bgzip -f SRR1770413_1.fastq
+bgzip -f SRR1770413_2.fastq
+
+3.比对
+3.1 为参考序列构建BWA比对所需的FM-index（比对索引）
+bwa index E.coli_K12_MG1655.fa
+3.2 比对
+time bwa mem -t 4 -R '@RG\tID:foo\tPL:illumina\tSM:E.coli_K12' E.coli_K12_MG1655.fa SRR1770413_1.fastq.gz SRR1770413_2.fastq.gz | samtools view -Sb - > E_coli_K12.bam && echo "** bwa mapping done **"
+3.3 排序
+time samtools sort -@ 4 -m 4G -O bam -o E_coli_K12.sorted.bam E_coli_K12.bam && echo "** BAM sort done"
+3.4 标记PCR重复
+time gatk MarkDuplicates -I E_coli_K12.sorted.bam -O E_coli_K12.sorted.markdup.bam -M E_coli_K12.sorted.markdup_metrics.txt && echo "** markdup done **"
+3.5 创建比对索引文件
+time samtools index E_coli_K12.sorted.markdup.bam && echo "** index done **"
+
+4.变异检测
+4.1 为参考基因组建立dict，前picard的功能
+gatk CreateSequenceDictionary -R E.coli_K12_MG1655.fa -O E.coli_K12_MG1655.dict && echo "** dict done **"
+4.2 生成中间文件gvcf
+time gatk HaplotypeCaller \
+	-R E.coli_K12_MG1655.fa \
+	--emit-ref-confidence GVCF \
+	-I E_coli_K12.sorted.markdup.bam \
+	-O E_coli_K12.g.vcf && echo "** gvcf done **"
+4.3 通过gvcf检测变异
+time gatk GenotypeGVCFs \
+	-R E.coli_K12_MG1655.fa \
+	-V E_coli_K12.g.vcf \
+	-O E_coli_K12.vcf && echo "** vcf done **"
+
+5.vcf预处理
+5.1 压缩 #-f, --force overwrite files without asking
+time bgzip -f E_coli_K12.vcf
+5.2 构建tabix索引
+time tabix -p vcf E_coli_K12.vcf.gz
+
+6.变异过滤
+6.1 使用SelectVariants，选出SNP
+time gatk SelectVariants \
+	-select-type SNP \
+    -V E_coli_K12.vcf.gz \
+    -O E_coli_K12.snp.vcf.gz
+6.2 为SNP作硬过滤 #只要符合了任意一个阈值的变异都会被设置为“Filter”，剩下的会被认为是正常的变异，并标记为“PASS”
+time gatk VariantFiltration \
+    -V E_coli_K12.snp.vcf.gz \
+    --filter-expression "QD < 2.0 || MQ < 40.0 || FS > 60.0 || SOR > 3.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0" \
+    --filter-name "Filter" \
+    -O E_coli_K12.snp.filter.vcf.gz
+6.3 使用SelectVariants，选出Indel
+time gatk SelectVariants \
+    -select-type INDEL \
+    -V E_coli_K12.vcf.gz \
+    -O E_coli_K12.indel.vcf.gz
+6.4 为Indel作过滤
+time gatk VariantFiltration \
+    -V ../output/E_coli_K12.indel.vcf.gz \
+    --filter-expression "QD < 2.0 || FS > 200.0 || SOR > 10.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0" \
+    --filter-name "Filter" \
+    -O E_coli_K12.indel.filter.vcf.gz
+6.5 重新合并过滤后的SNP和Indel
+time gatk MergeVcfs \
+    -I E_coli_K12.snp.filter.vcf.gz \
+    -I E_coli_K12.indel.filter.vcf.gz \
+    -O E_coli_K12.filter.vcf.gz
+
+7.参考：
+https://zhuanlan.zhihu.com/p/33891718
+https://zhuanlan.zhihu.com/p/34878471
