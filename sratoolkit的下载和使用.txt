@@ -1,0 +1,13 @@
+###sratoolkit的下载和使用###
+###2021.1.6	--zhangjj
+
+网址：https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/2.9.2/
+1. wget  https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/2.9.2/sratoolkit.2.9.2-centos_linux64.tar.gz
+2. tar -xzvf sratoolkit.2.9.2-centos_linux64.tar.gz 
+3. vi ~/.bashrc；将export  PATH="/home/zhangjj/software/sratoolkit.2.9.2-centos_linux64/bin:"$PATH加入到~/.bashrc中
+4. source ~/.bashrc
+（对于双端测序）第一种方式，先下载下来SRA文件，再将SRA文件转换为fq文件
+5.1 wget ftp://ftp-trace.ncbi.nlm.nih.gov/sra/sra-instant/reads/ByRun/sra/SRR/SRRxxx/SRRxxxxxxx/SRRxxxxxxx.sra
+5.1 fastq-dump --split-files SRRxxxxxxx.sra
+（对于双端测序）第二种方式，直接下载数据的SRA编号，它可以直接在下载的过程中就将SRA转换成两个fq文件，但速度较慢
+5.2 fastq-dump --split-files SRRxxxxxxx
